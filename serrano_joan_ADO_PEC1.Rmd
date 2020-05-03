@@ -1,0 +1,551 @@
+---
+title: "PEC1 Análisis de datos ómicos"
+author: "Joan Serrano Quílez"
+data: "03/04/2020"
+lang: es-ES
+output:
+  html_document:
+    fig_caption: yes
+    toc: true
+---
+
+L'arxiu executable d'aquest treball és pot trobar a *github* a l'adreça web: https://github.com/joaseki/PEC1_ADO
+
+```{r, include=F}
+if (!requireNamespace("BiocManager", quietly = TRUE)) 
+  install.packages("BiocManager")
+BiocManager::install()
+```
+
+
+# 1. Resum
+
+Com que els macròfags pertanyen a la ruta de senyalització per **vitamina D**, i aquests són l’objectiu principal en infeccions causades per *Mycobacterium tuberculosis*, es vol veure l’efecte d'aquesta vitamina en pacients amb la malaltia. Amb l’ajuda d’un microarray, es mesuren canvis d’expressió gènica en pacients sans i infectats (*H37Rv*) quan són exposats a un tractament amb vitamina D (en concret, 1,25-dihydroxyvitamin D o 1,25D); veient com aquest és capaç de modular la resposta immunològica en els pacients.
+
+# 2. Objectius
+
+Podríem considerar que l'objectiu d'aquest estudi mitjançant microarrays d'expressió gènica:
+
+ - Comprovar si existeixen diferències d'expressió entre els pacients sans i malalts abans de començar el tractament amb vitamina D.
+ - Veure com afecta de forma diferent el tractament als pacients malalts i als pacients sans a l'expressió de gens i veure quins processos s'activen en els dos casos.
+ 
+# 3. Materials i mètodes
+
+## 3.1. Dades
+
+Les dades triades corresponen a un estudi dut a terme l'any 2013 i que es poden trobar al GEO amb l'*accesion number* **GSE52819**. Són **12** mostres de RNA (transcripció) de monòcits procedents de:
+
+ - Pacients sans (3 rèpliques, S)
+ - Pacients malats (3 rèpliques, I)
+ - Pacients sans amb vitamina D (3 rèpliques, SD)
+ - Pacients malalts amb vitamina D (3 rèpliques, ID).
+
+Les quals s'analitzen amb un microarray d'**Affymetrix**, concretament la plataforma GPL6244, amb el nom de *Affymetrix Human Gene 1.0 ST Array* (HuGene-1_0-st). Aquest tipus de plataforma són d'un color i es fa servir una per mostra, de manera que es genera un arxiu .CEL amb les intensitats de cada sonda hibridada. Es poden accedir a les anotacions per aquestes seqüències amb la llibreria *hugene10sttranscriptcluster.db*. 
+
+Pel que fa al tipus experimental, és un experiment de **comparació de classes** (o *class comparison*), ja que l'objectiu principal és veure diferències entre el perfil d'expressió o entre els canvis en el perfil d'expressió en diferents condicions. El **disseny experimental** estaria distribuït en una estructura factorial, amb dos factors: **malaltia**, d'efectes fixes, el qual disposaria de dos nivells: sans i malalts. Aquest primer factor, estaria *creuat* amb un segon factor, també d'efectes fixes, **vitamina D**; que també conté 2 nivells, absència i presència. La seva equació seria:
+
+$$y_{ijk} = \mu +  \alpha_{i} + \beta_{j} + \alpha \beta_{ij} + \epsilon_{ijk}$$
+Sent $\mu$ la mitjana, $\alpha$ l'efecte de la malaltia, $\beta$ l'efecte de la vitamina D, $\alpha\beta$ la interacció entre ambdós i $\epsilon$ els errors aleatoris. No obstant això, podem simplificar les coses, creant un factor combinat amb 4 nivells (la combinació dels 4x4).
+
+$$y_{ij} = \mu +  \alpha_{i} + \epsilon_{ij}$$
+Així els contrastos que ens interessarien per a resoldre serien:
+
+- $\alpha_{I}$ vs $\alpha_{IV}$: efecte del tractament en persones infectades.
+- $\alpha_{S}$ vs $\alpha_{SV}$: efecte del tractament en persones sanes.
+- $\alpha_{I}$ vs $\alpha_{S}$: diferència del perfil d'expressió entre infectades i sanes. 
+ 
+## 3.2. Mètodes emprats
+
+He decidit unir en un sol apartat el "pipeline" emprat, amb explicacions de perquè es fa cada pas.
+
+### 3.2.1. Identificació dels grups
+
+Com s'ha explicat al disseny experimental, disposem de 4 grups diferents. La manera més senzilla de saber quina és la combinació de factors de cadascun d'ells és accedir amb el seu *accesion number* del GEO i extreure la informació. Amb aquesta informació, es crea de manera manual un arxiu *.csv* delimitat per comes que permeti llegir els .CEL que hem descarregat - un per cada mostra - i classificar-los segons aquests grups que hem definit. Això ho farem amb l'ajuda del paquet *oligo*.
+
+Així en aquest pas hem passat d'una llista de CELs a tenir les **dades crues** o *raw data*, en què per cada individu tenim les dades d'expressió per a cada sonda.
+
+### 3.2.2. Control de qualitat de les dades
+
+És fonamental saber si les dades presenten una estructura adequada o si tenen algun tipus de problema que ens obligui a fer reajustaments o inclús a eliminar algun tipus de mostra si no s'ajusta a la resta o a un paràmetres mínims. Aquest **control de qualitat** es duu a terme mitjançant una sèrie de gràfiques com poden ser l'anàlisi de components principals, per a veure com s'agrupen els 4 grups naturalment, o un boxplot amb la distribució de l'expressió a cadacuna de les 12 mostres. 
+
+El que s'ha fet directament per a saber si alguna mostra no compleix els requisits per seguir amb l'anàlisi és emprar el paquet **arrayQualityMetrics** que mostra tots els gràfics possibles i a més ens dona advertències sobre si eliminar o no alguna de les mostres. Si és així l'ometem, si no, continuem. 
+
+### 3.2.3. Normalització
+
+Un cop comprovat el comportament dels grups així com que les mostres estan correctes, és fonamental normalitzar per a poder comparar cadascuna de les mostres que s'han fet en un *array* diferent, i així eliminar problemes com poden ser diferències d'impressió, ubicacions diferents, canvis en la tinció (etc), que poden afectar a les mesures i, per tant, a les comparacions. En aquest cas, partim del *raw data* i mitjançant el mètode **RMA** (*robust multi-array average*) tractem d'eliminar aquest soroll, amb l'ordre *rma* amb l'ajuda de Bioconductor; el qual ajusta el *background*, pren logaritmes base 2 de cada valor d'expressió i estima els valors després de normalitzar per quantils. 
+
+Així hem passat d'un *rawData* a un fitxer que conté les dades ja normalitzades (*eset_rma*).
+
+### 3.2.4. Control de qualitat de les dades normalitzades
+
+De manera homòloga a allò fet a l'apartat 3.2.2, mitjançant PCA i *boxplot* i el paquet *arrayQualityMetrics* veiem si inclús després de la normalització hi ha alguna diferència en alguna mostra o s'ha d'eliminar alguna; a partir del *eset_rma*. Com també passa a l'apartat 3.2.2, s'obtenen una sèrie d'arxius per a poder comprovar que els valors són correctes. Un cop fet això, també fem un **PVCA** pr a comprobar si hi ha algun *batch effect* que afecti a les mesures, per veure d'on procedeix la variabilitat. 
+
+### 3.2.5. Filtratge no específic
+
+En aquest cas hem de filtrar les dades del *eset_rma* per tal de reduir el soroll de fons, podent eliminar tant senyals que són massa baixes, com aquelles que presentin massa variabilitat i que puguin interferir amb l'anàlisi; així com les que puguin haver tingut algun tipus de problema amb la hibridació. 
+
+Aquest filtratge el duem a terme amb el paquet **geneFilter**, amb la funció *nsFilter*. Aquí partim de les dades contingudes a *eset_rma*, i les podem filtrar segons els paràmetres que he dit. A més a més, com tenim dades d'**anotació** contingudes a *hugene10sttranscriptcluster.db*, podem eliminar aquelles sondes que no tinguin una anotació, i que per tant, no ens serviran per a seguir amb l'anàlisi; obtenint les dades **eset_filtered**.
+
+### 3.2.6. Identificació de gens diferencialment expressats
+
+Per tal de saber quins són els gens diferencialment expressats, primer haurem d'indicar quines són les comparacions que volem fer. 
+Com hem dit a l'apartat 3.1, són les següents:
+
+- $\alpha_{I}$ vs $\alpha_{IV}$: efecte del tractament en persones infectades.
+- $\alpha_{S}$ vs $\alpha_{SV}$: efecte del tractament en persones sanes.
+- $\alpha_{I}$ vs $\alpha_{S}$: diferència del perfil d'expressió entre infectades i sanes. 
+
+Així creem la matriu del model per a cada grup, en què la mostra que sigui del grup serà un 1 i la quqe no un 0. Després amb la funció **makeContrasts** podem indicar aquests 3 contrastos en què estem interessats, per a posteriorment fer el model lineal i aplicar-lo amb el criteri de **FDR** o *false discovery rate*. 
+
+Amb els *eset_filtered*, i el paquet *limma*, obtenim llavors la taula de gens més diferencials per a cada una de les comparacions, els quals els podem mostrar per pantalla o guardar en un arxiu. Serien els *topTable*.
+
+### 3.2.7. Anotació de resultats
+
+Un cop obtinguts quins gens són els que estan més diferencialment expressats, és necessari saber a quin gen real corresponen. Per això necessitem les anotacions, que relacioni la sonda amb el gen. Això ho fem a partir dels *topTable* tenint en compte que l'anotació es fa per aquest array amb *hugene10sttranscriptcluster.db*, el mateix que vam emprar per filtrar. Així obtenim les dades de gens anotats per a cadascuna de les 3 comparacions, en els fitxers: *topAnnotated*.
+
+Ara ja els resultats els podem visualitzar amb un *volcanoPlot* per a cada comparació, en apareixen el nom dels gens més diferencialment expressats i amb més poder estadístic. 
+
+### 3.2.8. Comparació entre comparacions
+
+Com que tenim més d'una comparació, en concret en tenim 3, podem veure quants gens s'han sel·leccionat en més de una. Això ho podem fer amb diagrames de Venn amb les funcions *decideTests* seguida de *vennDiagram*, a partir de la regressió lineal feta per *limma*.
+
+Tanmateix també és interessant veure els perfils d'expressió diferencials que s'obtenen mitjançant un **heatmap**, en què podem veure l'expressió si augmenta o disminueix per cadascun dels grups que es tenen amb un codi de colors. En aquest cas, com no estem amb descobriment de classes, no cal fer-ne un clustering.
+
+### 3.2.9. Anàlisi de significació biològica
+
+Un cop obtinguda la llista de gens diferencialment expressats per a cada comparació, haurem de saber en què procés biològic o bioquímic està involucrat. Una forma és relacionar cada gen amb seu procés segons la *Gene Ontology* (*GO*).
+
+Per a saber quins són els processos amb més canvi, es pot fer un **anàlisi d'enriquiment** per a saber si un procés està més present en la nostra llista de gens anotats que en l'univers de la totalitat de gens. Aquest procediment el fem a partir d'una *llista de gens* que creem a partir dels *topAnnotated* amb el paquet *profileCluster*.
+Així podem veure representacions gràfiques amb els processos GO més significatius que estan alterats en cadascuna de les modificacions.
+
+# 4. Resultats
+
+
+
+```{r, include=FALSE, message=F}
+#Preparem els directoris sobre els quals treballarem i què emprarem per a guardar els resultats
+setwd(".")
+dir.create("data")
+dir.create("results")
+```
+
+
+```{r, include=FALSE, message=FALSE}
+#Fiquem quins sons els nostres targets amb el csv que hem creat que conté quins són els grups i en què CEL està cada mostra corresponent a cada combinació
+targets <- read.table("./data/targets.csv", header = TRUE, sep = ";") 
+knitr::kable(
+  targets, booktabs = TRUE,
+  caption = 'Content of the targets file used for the current analysis')
+```
+
+
+```{r, include = FALSE, message = F}
+#Necessitem la llibreria oligo per a generar els rowData
+library(oligo)
+library(Biobase)
+#Accedim als CEL
+celFiles <- list.celfiles("./data", full.names = TRUE)
+#Els relacionem amb els targets que hem fet a mà
+my.targets <-read.AnnotatedDataFrame(file.path("./data","targets.csv"), 
+  header = TRUE, row.names = 1, 
+  sep=";") 
+rawData <- read.celfiles(celFiles, phenoData = my.targets)
+```
+
+```{r, include = FALSE}
+#Canvien alguns noms per a facilitar l'anàlisi
+my.targets@data$ShortName->rownames(pData(rawData))
+colnames(rawData) <-rownames(pData(rawData)) 
+head(rawData)
+```
+
+## 4.1. Controls de qualitat
+
+Un cop obtinguts els *rowData*, podem veure els gràfics de PCA i *boxplot* per a veure la distribució dels nivells d'expressió als diferents grups:
+
+```{r, include = FALSE, message = FALSE}
+#Carreguem la llibreria per a poder dur a terme l'anàlisi de qualitat, en el qual es veu com no hi ha cap mostra que se surti dels paràmetres
+library(arrayQualityMetrics)
+arrayQualityMetrics(rawData)
+```
+
+```{r, include = FALSE, message=FALSE}
+#Aquesta és la funció necessaria, proporcionada a la guia del curs
+library(ggplot2)
+library(ggrepel)
+plotPCA3 <- function(datos, labels, factor, title, scale,colores, size = 1.5, glineas = 0.25) {
+  data <- prcomp(t(datos),scale=scale)
+  # plot adjustments
+  dataDf <- data.frame(data$x)
+  Group <- factor
+  loads <- round(data$sdev^2/sum(data$sdev^2)*100,1)
+  # main plot
+  p1 <- ggplot(dataDf,aes(x=PC1, y=PC2)) +
+  theme_classic() +
+  geom_hline(yintercept = 0, color = "gray70") +
+  geom_vline(xintercept = 0, color = "gray70") +
+  geom_point(aes(color = Group), alpha = 0.55, size = 3) +
+  coord_cartesian(xlim = c(min(data$x[,1])-5,max(data$x[,1])+5)) +
+  scale_fill_discrete(name = "Group")
+  # avoiding labels superposition
+  p1 + geom_text_repel(aes(y = PC2 + 0.25, label = labels),segment.size = 0.25, size = size) + 
+  labs(x = c(paste("PC1",loads[1],"%")),y=c(paste("PC2",loads[2],"%"))) +  
+  ggtitle(paste("Anàlisi de components principals de: ",title,sep=" "))+ 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values=colores)
+}
+
+```
+
+
+```{r, echo = FALSE, fig.cap="Figura 1. Anàlisi de les components principals (PCA) amb els 4 grups de l'estudi"}
+#Fem la representació del PCA de rawAnàlisi
+plotPCA3(exprs(rawData), labels = targets$ShortName, factor = targets$Group, 
+  title="Raw data", scale = FALSE, size = 3, 
+  colores = c("red", "blue", "green", "yellow"))
+
+```
+
+
+Podem veure com no som capaços de distingir massa bé entre alguns grups, per exemple, la mostra 3 dinfectat amb vitamina D no es comporta com la resta. I en els pacients sans no hi ha molta separació entre els tractats i el que no ho estan. NO obstant això sí que  Procedim a veure la distribució de les intensitats:
+
+```{r, echo = FALSE, fig.cap = "Figura 2. Boxplot representant la distribució de les intensitats de l'expressió gènica a cadascun dels 4 grups estudiats"}
+#Fem un boxplot senzill per veure com és la distribució
+boxplot(rawData, cex.axis=0.5, las=2,  which="all", 
+col = c(rep("red", 3), rep("blue", 3), rep("green", 3), rep("yellow", 3)),
+main="Distribució d'intensitat del rawData")
+```
+
+
+En aquest cas, veiem que la distribució no és la mateixa entre els individus, ni tan sols dins del mateix grup. Tanmateix, la diferència no és massa gran, pel que podem continuar amb l'anàlisi.
+
+
+```{r, include = FALSE, message= FALSE}
+#Fem la normalització amb el paquet rma
+eset_rma <- rma(rawData)
+```
+
+```{r, include = FALSE, message = FALSE}
+#Fem el control de qualitat d'aquestes dades normalitzades
+arrayQualityMetrics(eset_rma, outdir = file.path("./results", "QCDir.Norm"), force=TRUE)
+```
+
+
+Un cop ja hem fet la normalització de les dades, podem veure els mateixos gràfics però amb les dades normalitzades:
+
+```{r, echo= FALSE, fig.cap= "Figura 3. Anàlisi de components principals pels 4 grups d'estudi després de la normalització mitjançant RMA"}
+#Tornem a representar les dades de PCA però ara normalitzades
+plotPCA3(exprs(eset_rma), labels = targets$ShortName, factor = targets$Group, 
+  title="Dades normalitzades", scale = FALSE, size =3, 
+  colores = c("red", "blue", "green", "yellow"))
+```
+
+
+En aquest cas la situació és prou diferent, sí que es distingeix perfetament entre els 4 grups. La primera component diferencia els malalts dels sans, per tant podem suposar que el fet de tenir la malaltia o no és la font principal de variabilitat. La segona ens diferencia perfectament entre els que tenen tractament i no en tenen. Així cada grup surt a un quadrant. També en volem veure la distribució:
+
+```{r, echo = FALSE, fig.cap= "Figura 4. Distribució de les intensitats de l'expressió gènica a cadascun dels 4 grups estudiats després de la normalització"}
+boxplot(eset_rma, cex.axis=0.5, las=2,  which="all", 
+col = c(rep("red", 3), rep("blue", 3), rep("green", 3), rep("yellow", 3)),
+main="Distribució dels valors normalitzats")
+```
+
+
+Al contrari que passava anteriorment, es veu com les distribucions són pràcticament idèntiques. Així que fem els anàlisis sense por a efectes per no normalitzar. També de cara a fer les comparacions posteriors, és interessant fer un anàlisi de PVCA per a veure quines components són importants pels canvis en expressió gènica.
+
+```{r, include=FALSE, message = FALSE}
+#Creem el PVCA amb un threshold de 0.6, assenyalant els dos factors
+library(pvca)
+pData(eset_rma) <- targets
+
+pct_threshold <- 0.6
+
+batch.factors <- c("Tuberculosis", "VitaminD")
+
+pvcaObj <- pvcaBatchAssess(eset_rma, batch.factors, pct_threshold)
+```
+
+
+```{r, echo = F, fig.cap= "Figura 5. Anàlisi de PVCA dels diferents factors de l'estudi"}
+#Podem representar el PVCA
+bp <- barplot(pvcaObj$dat, xlab = "Effects",
+  ylab = "Weighted average proportion variance",
+  ylim= c(0,1.1),col = c("cadetblue3"), las=2,
+  main="PVCA")
+axis(1, at = bp, labels = pvcaObj$label, cex.axis = 0.55, las=2)
+values = pvcaObj$dat
+new_values = round(values , 3)
+text(bp,pvcaObj$dat,labels = new_values, pos=3, cex = 0.5)
+```
+
+
+Es pot comprovar que el factor que té un efecte més gran és la mateixa tuberculosi, mentre que la interacció entre els dos factors resulta poc important, de manera que no l'estudiarem. Els residus també semblen petits, de manera que el *batch effect* no sembla important. 
+
+
+```{r, include = FALSE, message=FALSE}
+#Per fer el filtratge, carreguem el paquet genefilter
+library(genefilter)
+#Carreguem el paquet de les anotacions
+library(hugene10sttranscriptcluster.db)
+annotation(eset_rma) <- "hugene10sttranscriptcluster.db"
+#fem servir nsFilter per a filtrar la llista de gens
+filtered <- nsFilter(eset_rma, require.entrez = TRUE, remove.dupEntrez = TRUE, var.filter=TRUE, var.func=IQR, var.cutoff=0.75, filterByQuantile=TRUE, feature.exclude = "^AFFX")
+```
+
+
+```{r, include = FALSE}
+#Obtenim el dataset que conté els gens filtrats
+print(filtered$filter.log)
+eset_filtered <-filtered$eset
+```
+
+```{r, include=FALSE}
+#Els podem extreure tant els normalitzats com els filtrats a un csv que ens permeti treballar amb ells
+write.csv(exprs(eset_rma), file="./results/normalized.Data.csv")
+write.csv(exprs(eset_filtered), file="./results/normalized.Filtered.Data.csv")
+save(eset_rma, eset_filtered, file="./results/normalized.Data.Rda")
+```
+
+```{r, include = FALSE}
+#En cas que no trobi el set de filtrats, que carregui el fitxer creat
+if (!exists("eset_filtered")) load (file="./results/normalized.Data.Rda")
+```
+
+
+## 4.2. Descobriment de gens diferencials
+
+
+```{r, include = FALSE}
+#Carreguem un cop filtrat, la llibreria limma per a poder fer les comparacions
+library(limma)
+#Creemla matriu de 0s i 1s que ens relaciona la mostra amb el grup
+designMat<- model.matrix(~0+Group, pData(eset_filtered))
+colnames(designMat) <- c( "I", "I_D", "S","S_D")
+print(designMat)
+```
+
+
+```{r, include = FALSE}
+#Fiquem els contrastos que necessitem amb Makecontrasts
+cont.matrix <- makeContrasts(IvsID = I- I_D ,SvsSD= S-S_D,SvsI = S - I, levels=designMat)
+print(cont.matrix)
+```
+
+
+```{r, include = FALSE}
+#Fem el model lineal a partir del qual farem les representacions
+fit<-lmFit(eset_filtered, designMat)
+fit.main<-contrasts.fit(fit, cont.matrix)
+fit.main<-eBayes(fit.main)
+class(fit.main)
+```
+
+```{r, include = FALSE}
+library(printr)
+#Creem la taula amb els mes difetents a la comparacií IvsID
+topTab_IvsID <- topTable(fit.main, number=nrow(fit.main),coef="IvsID", adjust="fdr") 
+head(topTab_IvsID)
+```
+
+
+```{r, include = FALSE}
+#Creem la taula amb els mes diferents a la comparació SvsSD
+topTab_SvsSD <- topTable(fit.main, number=nrow(fit.main),coef="SvsSD", adjust="fdr") 
+head(topTab_SvsSD)
+```
+
+```{r, include = FALSE}
+#Creem la taula amb els mes diferents a la comparació SvsI
+topTab_SvsI <- topTable(fit.main, number=nrow(fit.main),coef="SvsI", adjust="fdr") 
+head(topTab_SvsI)
+
+```
+
+
+```{r, include = FALSE}
+#Creem una funció que eens permeti anotar cadascun dels gens més representats, amb els identificadors que necessitem, el del Entrez, el nom i el seu símbol
+annotatedTopTable <- function(topTab, anotPackage) {
+  topTab <- cbind(PROBEID=rownames(topTab), topTab)
+  myProbes <- rownames(topTab)
+  thePackage <- eval(parse(text = anotPackage))
+  geneAnots <- select(thePackage, myProbes, c("ENTREZID", "GENENAME", "SYMBOL"))
+  annotatedTopTab<- merge(x=geneAnots, y=topTab, by.x="PROBEID", by.y="PROBEID")
+  return(annotatedTopTab)
+}
+```
+
+
+
+```{r, include = FALSE}
+#Anotem cadascuna de les comparacions i si volem les exportem com a csv
+topAnnotated_IvsID <- annotatedTopTable(topTab_IvsID, anotPackage="hugene10sttranscriptcluster.db")
+topAnnotated_SvsSD <- annotatedTopTable(topTab_SvsSD, anotPackage="hugene10sttranscriptcluster.db")
+topAnnotated_SvsI <- annotatedTopTable(topTab_SvsI, anotPackage="hugene10sttranscriptcluster.db")
+write.csv(topAnnotated_IvsID, file="./results/topAnnotated_IvsID.csv")
+write.csv(topAnnotated_SvsSD, file="./results/topAnnotated_SvsSD.csv")
+write.csv(topAnnotated_SvsI, file="./results/topAnnotated_SvsI.csv")
+```
+
+
+Amb l'objectiu de veure quins són els gens diferencialment expressats en cada comparació, després de tots els passos podem veure en una representació de *Volcano*:
+
+```{r, echo = FALSE, fig.cap="Figura 6. Volcano plots representant els gens més diferencialment expressats per a dada comparació. Esquerra: malalts vs malalts amb vitamina A. Centre: sans vs sans amb vitamina A. Dreta: sans vs malalts", message=FALSE}
+#Seleccionem els noms des de la base de dades i fem que siguin els simbols, per a poder visulaitzar emprant un volcanoplot
+geneSymbols <- select(hugene10sttranscriptcluster.db, rownames(fit.main), c("SYMBOL"))
+GENESYMBOLS<- geneSymbols$SYMBOL
+par(mfrow = c(1,3))
+volcanoplot(fit.main, coef=1, highlight=4, names=GENESYMBOLS,  main=paste("", colnames(cont.matrix)[1], sep="\n"))
+abline(v=c(-1,1))
+volcanoplot(fit.main, coef=2, highlight=4, names=GENESYMBOLS,  main=paste("", colnames(cont.matrix)[2], sep="\n"))
+abline(v=c(-1,1))
+volcanoplot(fit.main, coef=3, highlight=4, names=GENESYMBOLS,  main=paste("", colnames(cont.matrix)[3], sep="\n"))
+abline(v=c(-1,1))
+
+```
+
+Podem veure com en totes les comparacions hi ha una baixada en l'expressió dels gens, pel desplaçameny a la dreta. Així veiem quins són els gens més diferens en cada comparació (i amb més significació estadística):
+
+- I vs ID: P24A1, NAV3, CD14, THBD.
+- S vs SD: P24A1, FBP1, PEX5L, TREM1.
+- S vs I: CCL8, CXCL11, IFITM1, HESX1.
+
+Veiem que en els que més canvi n'hi ha no coincideixen entre els grups, a més de P24A1 que està afectat en ambdos grups uan es tracta amb vitamina D.
+
+Per a veure quins gens estan alterats en més d'una comparació o en totes elles, el més recomanable en aquest cas és fer un diagrama de Venn que compari els grups:
+
+```{r, include = FALSE}
+#Fem els arbres de decisio amb limma que ens permetran sel·leccionar els gens
+res<-decideTests(fit.main, method="separate", adjust.method="fdr", p.value=0.1, lfc=1)
+sum.res.rows<-apply(abs(res),1,sum)
+res.selected<-res[sum.res.rows!=0,] 
+print(summary(res))
+```
+
+```{r, echo = FALSE, fig.cap="Figura 7. Diagrama de Venn que ens permet veure quins gens tenen en comú cadascuna de les comparacions dudes a terme", message = FALSE, warning=FALSE}
+#Fem el diagrama de Venn:
+vennDiagram(res.selected[,1:3], cex=0.9, circle.col = "cadetblue3")
+title(" Genes sel·leccionats amb un FDR < 0.1 i un logFC > 1")
+```
+
+Així veiem que gens que canvien en tots 3 casos són, per exemple, 29. Una altra forma de veure comparacions entre els diferents grups, és mitjançant un *heatmap* que mostri els 4 grups:
+
+```{r, include=FALSE}
+#selecionem els distrints noms que seran els simbols, emprant la base de dades on són les anotacions
+probesInHeatmap <- rownames(res.selected)
+HMdata <- exprs(eset_filtered)[rownames(exprs(eset_filtered)) %in% probesInHeatmap,]
+geneSymbols <- select(hugene10sttranscriptcluster.db, rownames(HMdata), c("SYMBOL"))
+SYMBOLS<- geneSymbols$SYMBOL
+rownames(HMdata) <- SYMBOLS
+#el podem exportar com a csv
+write.csv(HMdata, file = file.path("./results/data4Heatmap.csv"))
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 8. Heatmap mostrant els gens diferencialment expressats a les comparacions efectuades"}
+#imprimim els gràfics seleccionant la paleta de colors
+my_palette <- colorRampPalette(c("blue", "red"))(n = 299)
+library(gplots)
+heatmap.2(HMdata,Rowv = FALSE, Colv = FALSE, main = "Differentially expressed genes \n FDR < 0,1, logFC >=1",scale = "row", col = my_palette,sepcolor = "white", sepwidth = c(0.05,0.05), cexRow = 0.5, cexCol = 0.9, key = TRUE, keysize = 1.5, density.info = "histogram",  ColSideColors = c(rep("red",3),rep("blue",3), rep("green",3), rep("yellow",3)), tracecol = NULL,dendrogram = "none",srtCol = 30)
+
+```
+
+Podem veure per exemple com els pacients sans són els que més s'assemblen entre si pel que fa l'expressió diferencial de gens. 
+
+Malgrat això, tenim gens, però no, sabem a quines categories podrien pertànyer. Per això fem el enriquiment de GO per a cada comparació:
+
+```{r, include= FALSE}
+#Requerim la llibreria DOSE i creem els geneList com a vector a partir dels topAnnotated amb el valor de logFC i les IDs
+library(DOSE)
+
+geneListIvsID <- topAnnotated_IvsID$logFC
+names(geneListIvsID) <- as.character(topAnnotated_IvsID$ENTREZID)
+geneListIvsID <- sort(geneListIvsID, decreasing = T)
+
+geneListSvsSD <- topAnnotated_SvsSD$logFC
+names(geneListSvsSD) <- as.character(topAnnotated_SvsSD$ENTREZID)
+geneListSvsSD <- sort(geneListSvsSD, decreasing = T)
+
+geneListSvsI <- topAnnotated_SvsI$logFC
+names(geneListSvsI) <- as.character(topAnnotated_SvsI$ENTREZID)
+geneListSvsI <- sort(geneListSvsI, decreasing = T)
+
+```
+
+
+```{r, include = FALSE, warning=FALSE, message=FALSE}
+#Obrim la llibreria clusterProfiler
+library(clusterProfiler)
+#creo una funció que generi dades ego, es a dir, els enriquiments en GO
+ego_creator <- function(geneList){
+  #Fico l'umbral en 1.5, perquè sinó no surten massa gens
+  gene <- names(geneList)[abs(geneList)>1.5]
+  #selecciono la base de dades, i el tipus de format que té l'origen
+  gene.df <- bitr(gene, fromType = "ENTREZID", toType = c("SYMBOL", "ENTREZID", "GENENAME"),
+        OrgDb = org.Hs.eg.db)
+  #Selecciono totes les categories del GO i els valors a partirs del qual prendrà les dades
+  ego <- enrichGO(gene         = gene.df$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = 'ENTREZID',
+                ont           = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05)
+  return(ego)
+}
+#Aplico la funció a cada comparació feta
+egoIvsID <- ego_creator(geneListIvsID)
+egoSvsSD <- ego_creator(geneListSvsSD)
+egoSvsI <- ego_creator(geneListSvsI)
+
+
+```
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE, fig.cap= "Figura 9. Barplots amb els procediments GO enriquidts en cadascuna de les comparacions"}
+
+library(enrichplot)
+barplot(egoIvsID, showCategory=20, main = "Rutes enriquides en la comparació IvsID")
+barplot(egoSvsSD, showCategory=20, main = "Rutes enriquides en la comparació SvsSD")
+barplot(egoSvsI, showCategory=20, main = "Rutes enriquides en la comparació SvsI")
+
+```
+
+
+
+
+
+
+Així doncs, podem veure com les categories més modificades segons la comparació:
+
+- IvsID: principalment rutes involucrades en modulació del sistema immunitari, com la resposta celular, la creació de citoquines, o la resposta inflamatòria, la qual cosa té sentit en modular la vitamina D aquesta resposta.
+
+- SvsSD: principalment, involucrades amb el DNA però també un poc amb resposta immunitària, amb la qual cosa coincideix amb els IvsID.
+
+- IvsS: gairebé tots són de resposta a virus, infeccions i de resposta immunitària, la qual cosa té sentit en comparar pacients sans amb malalts.
+
+# 5. Discusió
+
+Principalment, la limitació principal que trobo en aquest treball és el nombre de mostres que és sustancialment reduït. Això provoca, d'una banda que haguem de ser menys restrictius en alguns anàlisis perquè no hi ha significació estadística deguda al baix tamany de la mostra. Si s'incrementa de segur que es trbaran més i per tant, descobrirem amb més facilitat quines vies exactament estan afectades. 
+
+Tanmateix, pel nombre tan reduït de mostres, el control de qualitat, tant pel que fa la distribució de les intensitats com a l'agrupació per part del PCA són gaire bones, el que permet un bon anàlisi posterior. Haver d'eliminar alguna mostra hauria estat catastròfic. 
+
+Una altra cosa que es podria haver fet és el tractament en diferents punts temporals, per a poder comprovar en quin d'ells n'hi ha més efecte i en quin no, a més que augmentaríem indirectament el nombre de mostres segons les comparacions que fem.
+
+Biològicament, sembla clar que la major part dels gens que s'indueixen són els de resposta immunitària, que sembla reforçada en presència de vitamina D. Els canvis que es veuen entre els sans i els malalts són d'esperar.
+
+# 6. Conclusió
+
+En aquest estudi podem concloure com el tractament amb vitamina D sembla tenir un efecte en pacients amb tuberculosi, en afectar gens relacionats amb resposta immunitària. Aquest efecte no està tan clar en el pacients sans. A banda les diferències principals entre sans i malalts semblen radicar en la resposta que l'organisme dona front al virus.
+
+# 7. Apèndix
+
+Es pot trobar una còpia d'aquest Rmd a l'adreça https://github.com/joaseki/PEC1_ADO
+
+
+# 8. Bibiografia
+
+- Davis, S. and Meltzer, P. S. GEOquery: a bridge between the Gene Expression Omnibus (GEO) and BioConductor. Bioinformatics, 2007, 14, 1846-1847.
+
+- Verway M, Bouttier M, Wang TT, Carrier M et al. Vitamin D induces interleukin-1β expression: paracrine macrophage epithelial signaling controls M. tuberculosis infection. PLoS Pathog 2013;9(6):e1003407. PMID: 23762029
+
+- Yu, Guangchuang, Le-Gen Wang, Yanyan Han, and Qing-Yu He. 2012. “ClusterProfiler: An R Package for Comparing Biological Themes Among Gene Clusters.” OMICS: A Journal of Integrative Biology 16 (5): 284–87. https://doi.org/10.1089/omi.2011.0118.
+
+- Gonzalo Sanz, Ricardo, and Alex Sánchez-Pla. 2019. “Statistical Analysis of Microarray Data.” In Microarray Bioinformatics, edited by Verónica Bolón-Canedo and Amparo Alonso-Betanzos, 87–121. New York, NY: Springer New York. https://doi.org/10.1007/978-1-4939-9442-7_5.
